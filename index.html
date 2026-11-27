@@ -1313,6 +1313,7 @@
 
         const EMPTY_DATA = {
             batches: [...DEFAULT_BATCHES],
+            countdownSettings: null,
             announcements: [],
             materials: [],
             marks: [],
@@ -1324,6 +1325,12 @@
         let memoryFallbackStore = {};
         let storageAvailable = checkLocalStorageAvailable();
         let appData = loadAppData();
+        if (appData && appData.countdownSettings && appData.countdownSettings.targetIso) {
+            activeCountdownSettings = {
+                targetIso: appData.countdownSettings.targetIso,
+                heading: appData.countdownSettings.heading || DEFAULT_EXAM_HEADING
+            };
+        }
         let currentBatch = DEFAULT_BATCH;
         let currentMaterialTab = 'Homework';
         let currentAdminManageTab = 'materials';
@@ -1534,8 +1541,15 @@
                         const loadedBatches = Array.isArray(parsed.batches) && parsed.batches.length > 0
                             ? parsed.batches.map(b => String(b).trim()).filter(Boolean)
                             : [...DEFAULT_BATCHES];
+                        const loadedCountdown = (parsed.countdownSettings && typeof parsed.countdownSettings === 'object' && parsed.countdownSettings.targetIso)
+                            ? {
+                                targetIso: String(parsed.countdownSettings.targetIso),
+                                heading: String(parsed.countdownSettings.heading || DEFAULT_EXAM_HEADING)
+                            }
+                            : null;
                         return {
                             batches: loadedBatches,
+                            countdownSettings: loadedCountdown,
                             announcements: Array.isArray(parsed.announcements) ? parsed.announcements : [],
                             materials: Array.isArray(parsed.materials) ? parsed.materials : [],
                             marks: Array.isArray(parsed.marks) ? parsed.marks : [],
@@ -1557,6 +1571,12 @@
 
         function saveAppData() {
             try {
+                if (activeCountdownSettings && activeCountdownSettings.targetIso) {
+                    appData.countdownSettings = {
+                        targetIso: activeCountdownSettings.targetIso,
+                        heading: activeCountdownSettings.heading || DEFAULT_EXAM_HEADING
+                    };
+                }
                 safeStorageSet(STORAGE_KEY, JSON.stringify(appData));
             } catch (err) {
                 console.error('Error saving portal data:', err);
@@ -1765,13 +1785,23 @@
 
         function loadCountdownSettings() {
             try {
+                const mainRaw = safeStorageGet(STORAGE_KEY);
+                if (mainRaw) {
+                    const mainParsed = JSON.parse(mainRaw);
+                    if (mainParsed && mainParsed.countdownSettings && mainParsed.countdownSettings.targetIso) {
+                        return {
+                            targetIso: String(mainParsed.countdownSettings.targetIso),
+                            heading: String(mainParsed.countdownSettings.heading || DEFAULT_EXAM_HEADING)
+                        };
+                    }
+                }
                 const raw = safeStorageGet(COUNTDOWN_STORAGE_KEY);
                 if (raw) {
                     const parsed = JSON.parse(raw);
                     if (parsed && parsed.targetIso) {
                         return {
-                            targetIso: parsed.targetIso,
-                            heading: parsed.heading || DEFAULT_EXAM_HEADING
+                            targetIso: String(parsed.targetIso),
+                            heading: String(parsed.heading || DEFAULT_EXAM_HEADING)
                         };
                     }
                 }
@@ -1817,9 +1847,12 @@
                 targetIso: parsedDate.toISOString(),
                 heading: headingVal
             };
+            appData.countdownSettings = { ...activeCountdownSettings };
             safeStorageSet(COUNTDOWN_STORAGE_KEY, JSON.stringify(activeCountdownSettings));
+            saveAppData();
+            syncToGoogleSheets('saveCountdown', activeCountdownSettings);
             startExamCountdownTimer();
-            showToast('Exam Countdown updated!', 'success');
+            showToast('Exam Countdown saved!', 'success');
         }
 
         function startExamCountdownTimer() {
@@ -2486,7 +2519,8 @@
 
             const allPapersTbody = document.getElementById('all-papers-marking-tbody');
             if (allPapersTbody) {
-                allPapersTbody.innerHTML = enriched.map((item, idx) => {
+                const newestFirstPapers = enriched.slice().reverse();
+                allPapersTbody.innerHTML = newestFirstPapers.map((item, idx) => {
                     const pureDisplay = (item.pureScore !== null && item.pureScore !== undefined && item.pureScore !== '')
                         ? `${item.pureScore}`
                         : '&mdash;';
@@ -4260,6 +4294,15 @@
                     if (Array.isArray(json.data.batches) && json.data.batches.length > 0) {
                         appData.batches = json.data.batches;
                     }
+                    if (json.data.countdownSettings && json.data.countdownSettings.targetIso) {
+                        activeCountdownSettings = {
+                            targetIso: String(json.data.countdownSettings.targetIso),
+                            heading: String(json.data.countdownSettings.heading || DEFAULT_EXAM_HEADING)
+                        };
+                        appData.countdownSettings = { ...activeCountdownSettings };
+                        safeStorageSet(COUNTDOWN_STORAGE_KEY, JSON.stringify(activeCountdownSettings));
+                        startExamCountdownTimer();
+                    }
                     if (Array.isArray(json.data.materials)) appData.materials = json.data.materials;
                     if (Array.isArray(json.data.announcements)) appData.announcements = json.data.announcements;
                     if (Array.isArray(json.data.marks)) appData.marks = json.data.marks;
@@ -4334,8 +4377,15 @@
             reader.onload = function (ev) {
                 try {
                     const parsed = JSON.parse(String(ev.target.result || '{}'));
+                    const importedCountdown = (parsed.countdownSettings && typeof parsed.countdownSettings === 'object' && parsed.countdownSettings.targetIso)
+                        ? {
+                            targetIso: String(parsed.countdownSettings.targetIso),
+                            heading: String(parsed.countdownSettings.heading || DEFAULT_EXAM_HEADING)
+                        }
+                        : null;
                     appData = {
                         batches: Array.isArray(parsed.batches) && parsed.batches.length > 0 ? parsed.batches : [...DEFAULT_BATCHES],
+                        countdownSettings: importedCountdown,
                         announcements: Array.isArray(parsed.announcements) ? parsed.announcements : [],
                         materials: Array.isArray(parsed.materials) ? parsed.materials : [],
                         marks: Array.isArray(parsed.marks) ? parsed.marks : [],
@@ -4343,6 +4393,11 @@
                         lessons: Array.isArray(parsed.lessons) ? parsed.lessons : [],
                         studentProgress: (parsed.studentProgress && typeof parsed.studentProgress === 'object') ? parsed.studentProgress : {}
                     };
+                    if (importedCountdown) {
+                        activeCountdownSettings = { ...importedCountdown };
+                        safeStorageSet(COUNTDOWN_STORAGE_KEY, JSON.stringify(activeCountdownSettings));
+                        startExamCountdownTimer();
+                    }
                     ensureAllProgressRecordsExist();
                     saveAppData();
                     renderAllStudentViews();
